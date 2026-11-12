@@ -39,6 +39,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
 
 
 class SendMessageActivity : ComponentActivity() {
@@ -49,7 +50,6 @@ class SendMessageActivity : ComponentActivity() {
         const val AUDIO_PACKET_SAMPLES = 320
     }
 
-    private var randomFile = false
     private val TAG = "SendMessageActivity"
     private lateinit var binding: ActivitySendmessageBinding
     private var startTime = 0L
@@ -93,8 +93,20 @@ class SendMessageActivity : ComponentActivity() {
         PSecuritySDK.getMessageService()?.getBtFileOperater()
     }
 
+    /** SDK may report the peer's receive completion through the sender listener. */
+    private fun isLocalFileCompletion(filePath: String): Boolean {
+        val expected = runCatching { curFile.canonicalPath }.getOrNull() ?: return false
+        val actual = runCatching { File(filePath).canonicalPath }.getOrNull() ?: filePath
+        return actual == expected
+    }
+
     private val fileReceiveListener = object : FileReceiveListener {
         private var lastByteProgressTime = 0L
+        private val completionReported = AtomicBoolean(false)
+
+        fun resetForNewTransfer() {
+            completionReported.set(false)
+        }
 
         override fun onStart() {
             startTime = System.currentTimeMillis()
@@ -136,6 +148,11 @@ class SendMessageActivity : ComponentActivity() {
          * Path of the file sent from the glasses.
          */
         override fun onComplete(filePath: String) {
+            if (!isLocalFileCompletion(filePath)) {
+                Log.i("SendMessageActivity", "忽略对端接收完成通知: $filePath")
+                return
+            }
+            if (!completionReported.compareAndSet(false, true)) return
             if (stoppedFileOperator != null) {
                 log(demoString(R.string.demo_file_completed_after_stop, filePath))
                 return
@@ -161,7 +178,6 @@ class SendMessageActivity : ComponentActivity() {
     }
 
     val a1File = "scene.jpg"
-    val a2File = "girl.png"
     val a3File = "app-release.apk"
     var curFile = File("")
 
@@ -173,7 +189,6 @@ class SendMessageActivity : ComponentActivity() {
         sdDownload = FileUtil.getAppPath(this, "temp")
 
         copyFileFromAssetsToFileCache(this, a1File)
-        copyFileFromAssetsToFileCache(this, a2File)
         copyFileFromAssetsToFileCache(this, a3File)
 
         //wifi模式发送文本
@@ -184,23 +199,15 @@ class SendMessageActivity : ComponentActivity() {
         }
         binding.wfSendFileBtn.setOnClickListener {
             val fileToSend1 = File(sdDownload, a1File)
-            val fileToSend2 = File(sdDownload, a2File)
 
             activeFileOperator = mFileOperator
             stoppedFileOperator = null
             logBuilder.clear()
             log(demoString(R.string.demo_preparing_to_send_file))
-            if (randomFile) {
-                randomFile = false
-                Log.e(TAG, "文件目录: ${fileToSend1.absolutePath}")
-                curFile = fileToSend1
-                mFileOperator?.sendFile("", fileToSend1, fileReceiveListener) {}
-            } else {
-                randomFile = true
-                Log.e(TAG, "文件目录: ${fileToSend2.absolutePath}")
-                curFile = fileToSend2
-                mFileOperator?.sendFile("", fileToSend2, fileReceiveListener) {}
-            }
+            Log.e(TAG, "文件目录: ${fileToSend1.absolutePath}")
+            curFile = fileToSend1
+            fileReceiveListener.resetForNewTransfer()
+            mFileOperator?.sendFile("", fileToSend1, fileReceiveListener) {}
         }
         binding.wfFileStatusBtn.setOnClickListener {
             showFileSendingState(mFileOperator, R.string.demo_p2p_file_channel)
@@ -219,26 +226,14 @@ class SendMessageActivity : ComponentActivity() {
         }
         binding.btSendFileBtn.setOnClickListener {
             val fileToSend1 = File(sdDownload, a1File)
-            val fileToSend2 = File(sdDownload, a2File)
             activeFileOperator = mBTFileOperator
             stoppedFileOperator = null
             logBuilder.clear()
             log(demoString(R.string.demo_preparing_to_send_file))
-            if (randomFile) {
-                randomFile = false
-                curFile = fileToSend1
-                log(demoString(R.string.demo_sending_via_bluetooth_file_path, fileToSend1.absolutePath))
-                mBTFileOperator?.sendFile(null, fileToSend1, fileReceiveListener) {}
-            } else {
-                randomFile = true
-                curFile = fileToSend2
-                log(demoString(R.string.demo_sending_via_bluetooth_file_path, fileToSend2.absolutePath))
-                // /storage/emulated/0/Download/receiver/test1girl.png 眼镜端接收文件目录
-                // /storage/emulated/0/Download/receiver/test1girl.png is the receiving file path on the glasses.
-                // 眼镜端文件名的前面增加了一段内容,原本的文件名前面增加了前缀，dir 可以写空字符串 或为 null
-                // A prefix is added to the original file name on the glasses; dir may be an empty string or null.
-                mBTFileOperator?.sendFile(null, fileToSend2, fileReceiveListener) {}
-            }
+            curFile = fileToSend1
+            fileReceiveListener.resetForNewTransfer()
+            log(demoString(R.string.demo_sending_via_bluetooth_file_path, fileToSend1.absolutePath))
+            mBTFileOperator?.sendFile(null, fileToSend1, fileReceiveListener) {}
         }
         binding.btFileStatusBtn.setOnClickListener {
             showFileSendingState(mBTFileOperator, R.string.demo_bluetooth_file_channel)
@@ -287,8 +282,6 @@ class SendMessageActivity : ComponentActivity() {
                 }
             })
         }
-        mBTFileOperator?.addFileReceiveListener(fileReceiveListener)
-        mFileOperator?.addFileReceiveListener(fileReceiveListener)
     }
 
     private fun showFileSendingState(operator: IFileOperate?, channelRes: Int) {

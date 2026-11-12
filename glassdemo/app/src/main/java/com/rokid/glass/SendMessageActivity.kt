@@ -49,6 +49,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 眼镜端 SDK 功能演示页面。
@@ -73,9 +74,6 @@ class SendMessageActivity : BaseGlassActivity() {
     // ID of the focused feature button; clicks use it to dispatch the corresponding SDK operation.
     private var currentSelectId: Int = -1
 
-    // 文件发送时在两个示例文件之间交替选择。
-    // Alternate between the two sample files when sending files.
-    private var randomFile = false
     private val TAG = "SendMessageActivity"
     private lateinit var binding: ActivitySendmessageBinding
 
@@ -163,6 +161,15 @@ class SendMessageActivity : BaseGlassActivity() {
         GlassSdk.getGlassMessageService()?.glassBtFileOperater
     }
 
+    private val phoneReceiverDir = "/storage/emulated/0/Android/data/com.rokid.phone/files/receiver"
+
+    /** 发送端完成回调有时会先收到对端的接收完成通知。只接受本端源文件路径。 */
+    private fun isLocalFileCompletion(filePath: String): Boolean {
+        val expected = runCatching { curFile.canonicalPath }.getOrNull() ?: return false
+        val actual = runCatching { File(filePath).canonicalPath }.getOrNull() ?: filePath
+        return actual == expected
+    }
+
     /**
      * 蓝牙文件发送状态回调。
      * Bluetooth file transfer status callback.
@@ -173,6 +180,12 @@ class SendMessageActivity : BaseGlassActivity() {
      * transfer states such as start, progress, completion, failure, and cancellation.
      */
     private val bleFileReceiveListener = object : FileReceiveListener.Stub() {
+        private val completionReported = AtomicBoolean(false)
+
+        fun resetForNewTransfer() {
+            completionReported.set(false)
+        }
+
         override fun onStart() {
             startTime = System.currentTimeMillis()
             Log.i(TAG, "onStart: 蓝牙本端开始发送文件")
@@ -193,6 +206,11 @@ class SendMessageActivity : BaseGlassActivity() {
          * Path of the file to send from the glasses.
          */
         override fun onComplete(filePath: String) {
+            if (!isLocalFileCompletion(filePath)) {
+                Log.i(TAG, "onComplete: 忽略对端接收完成通知,----$filePath")
+                return
+            }
+            if (!completionReported.compareAndSet(false, true)) return
             // 手机端接收文件的路径 /storage/emulated/0/Android/data/com.rokid.phone/files/receiver/gonglu.png
             // Received file path on the phone: /storage/emulated/0/Android/data/com.rokid.phone/files/receiver/gonglu.png
             Log.i(TAG, "onComplete: 蓝牙本端发送文件完成,----$filePath")
@@ -230,6 +248,12 @@ class SendMessageActivity : BaseGlassActivity() {
      * P2P file transfer status callback; report progress and track transfer duration and file size.
      */
     private val p2pFileReceiveListener = object : FileReceiveListener.Stub() {
+        private val completionReported = AtomicBoolean(false)
+
+        fun resetForNewTransfer() {
+            completionReported.set(false)
+        }
+
         override fun onStart() {
             startTime = System.currentTimeMillis()
             Log.i(TAG, "onStart: p2p本端开始发送文件")
@@ -250,6 +274,11 @@ class SendMessageActivity : BaseGlassActivity() {
          * Path of the file to send from the glasses.
          */
         override fun onComplete(filePath: String) {
+            if (!isLocalFileCompletion(filePath)) {
+                Log.i(TAG, "onComplete: 忽略对端接收完成通知,----$filePath")
+                return
+            }
+            if (!completionReported.compareAndSet(false, true)) return
             // 手机端接收文件的路径 /storage/emulated/0/Android/data/com.rokid.phone/files/receiver/gonglu.png
             // Received file path on the phone: /storage/emulated/0/Android/data/com.rokid.phone/files/receiver/gonglu.png
             Log.i(TAG, "onComplete: p2p本端发送文件完成,----$filePath")
@@ -282,8 +311,7 @@ class SendMessageActivity : BaseGlassActivity() {
         }
     }
 
-    val a1File = "xiyi.jpg"
-    val a2File = "gonglu.png"
+    val a1File = "scene.jpg"
 
     // 当前正在发送的文件，完成回调通过它统计源文件大小。
     // The file currently being sent; the completion callback uses it to determine the source file size.
@@ -310,10 +338,9 @@ class SendMessageActivity : BaseGlassActivity() {
             binding.llMain.minimumHeight = (bottom - top).coerceAtLeast(0)
         }
 
-        // 提前准备文件传输演示使用的两个本地文件。
-        // Prepare the two local files used by the file transfer demo in advance.
+        // 提前准备文件传输演示使用的固定示例文件。
+        // Prepare the fixed sample file used by the file transfer demo.
         copyFileFromAssetsToExternalStorage(this, a1File)
-        copyFileFromAssetsToExternalStorage(this, a2File)
 
         // 默认选中第一个功能，确保眼镜点击键进入页面后可以直接操作。
         // Select the first feature by default so the glasses click key works as soon as the page opens.
@@ -321,8 +348,6 @@ class SendMessageActivity : BaseGlassActivity() {
 
         // 分别注册经典蓝牙和 P2P 文件传输状态监听。
         // Register file transfer status listeners for classic Bluetooth and P2P separately.
-        mBTFileOperator?.setFileReceiveListener(bleFileReceiveListener)
-        mFileOperator?.setFileReceiveListener(p2pFileReceiveListener)
 
         // 注册一条离线语音命令，页面销毁时会解除注册。
         // Register an offline voice command and unregister it when the page is destroyed.
@@ -371,24 +396,15 @@ class SendMessageActivity : BaseGlassActivity() {
 
             R.id.wfSendFileBtn -> {
                 val fileToSend1 = File(sdDownload, a1File)
-                val fileToSend2 = File(sdDownload, a2File)
                 logBuilder.clear()
                 log(demoString(R.string.demo_preparing_to_send_file_via_p2p))
                 activeFileOperator = mFileOperator
                 stoppedFileOperator = null
-                // 连续操作时交替发送两个文件，方便验证不同大小/格式的传输。
-                // Alternate between the two files on successive operations to verify transfers of different sizes and formats.
-                if (randomFile) {
-                    randomFile = false
-                    Log.e(TAG, "文件目录: ${fileToSend1.absolutePath}")
-                    curFile = fileToSend1
-                    mFileOperator?.sendFile("", fileToSend1.absolutePath, p2pFileReceiveListener, mResultCallback)
-                } else {
-                    randomFile = true
-                    Log.e(TAG, "文件目录: ${fileToSend2.absolutePath}")
-                    curFile = fileToSend2
-                    mFileOperator?.sendFile("", fileToSend2.absolutePath, p2pFileReceiveListener, mResultCallback)
-                }
+                Log.e(TAG, "文件目录: ${fileToSend1.absolutePath}")
+                curFile = fileToSend1
+                p2pFileReceiveListener.resetForNewTransfer()
+                Log.i(TAG, "P2P发送源文件目录: ${fileToSend1.absolutePath}; 手机端接收目录: $phoneReceiverDir/$a1File")
+                mFileOperator?.sendFile("", fileToSend1.absolutePath, p2pFileReceiveListener, mResultCallback)
             }
 
             R.id.btSendTextBtn -> {
@@ -398,24 +414,14 @@ class SendMessageActivity : BaseGlassActivity() {
 
             R.id.btSendFileBtn -> {
                 val fileToSend1 = File(sdDownload, a1File)
-                val fileToSend2 = File(sdDownload, a2File)
                 logBuilder.clear()
                 log(demoString(R.string.demo_preparing_to_send_file_via_bluetooth))
                 activeFileOperator = mBTFileOperator
                 stoppedFileOperator = null
-                // 与 P2P 示例保持一致，交替发送两个 Assets 示例文件。
-                // As in the P2P example, alternate between the two sample assets.
-                if (randomFile) {
-                    randomFile = false
-                    curFile = fileToSend1
-                    Log.e(TAG, "蓝牙发送---->文件目录: ${fileToSend1.absolutePath}")
-                    mBTFileOperator?.sendFile("", fileToSend1.absolutePath, bleFileReceiveListener, mResultCallback)
-                } else {
-                    randomFile = true
-                    curFile = fileToSend2
-                    Log.e(TAG, "蓝牙发送---->文件目录: ${fileToSend2.absolutePath}")
-                    mBTFileOperator?.sendFile("", fileToSend2.absolutePath, bleFileReceiveListener, mResultCallback)
-                }
+                curFile = fileToSend1
+                bleFileReceiveListener.resetForNewTransfer()
+                Log.e(TAG, "蓝牙发送源文件目录: ${fileToSend1.absolutePath}; 手机端接收目录: $phoneReceiverDir/$a1File")
+                mBTFileOperator?.sendFile("", fileToSend1.absolutePath, bleFileReceiveListener, mResultCallback)
             }
 
             R.id.wfStopFileBtn -> stopFileSending(mFileOperator, R.string.demo_file_channel_p2p)
@@ -800,7 +806,7 @@ class SendMessageActivity : BaseGlassActivity() {
         // Unregister listeners and stop ongoing speech tasks when leaving the page to avoid callbacks retaining the Activity.
         lifecycleScope.cancel()
         GlassSdk.getGlassMessageService()?.removeMessageListener(mMessageListener)
-        mFileOperator?.removeFileReceiveListener(bleFileReceiveListener)
+        mFileOperator?.removeFileReceiveListener(p2pFileReceiveListener)
         mBTFileOperator?.removeFileReceiveListener(bleFileReceiveListener)
         stopOnlineAsr()
         messageTts.close()
