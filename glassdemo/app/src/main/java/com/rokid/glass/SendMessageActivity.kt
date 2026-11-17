@@ -124,6 +124,7 @@ class SendMessageActivity : BaseGlassActivity() {
 
     private fun speechCallback(token: Long) = object : SpeechCallback.Stub() {
         override fun onStart() = deliver(onlineAsrSession, token) {
+            onlineAsrSession.updateConnectionState(true)
             onlineAsrSession.started(token)
             cancelOnlineAsrTimeout()
             log(OnlineAsrStatusMessages.started)
@@ -145,11 +146,15 @@ class SendMessageActivity : BaseGlassActivity() {
             log(OnlineAsrStatusMessages.error(code))
         }
 
-        override fun onServiceConnectState(connect: Boolean) = deliver(onlineAsrSession, token) {
-            // SDK 可能重放没有会话标识的缓存状态，不能仅据此判断本次识别失败。
-            // Cached SDK status has no session ID, so it alone cannot prove this recognition request failed.
-            if (connect) log(OnlineAsrStatusMessages.connected)
-            else log(demoString(R.string.demo_online_asr_connection_is_not_ready_waiting_for))
+        override fun onServiceConnectState(connect: Boolean) {
+            // Connection state can arrive after the active session has been stopped, so it
+            // must update the gate independently of the session token.
+            speechHandler.post {
+                if (isDestroyed) return@post
+                onlineAsrSession.updateConnectionState(connect)
+                if (connect) log(OnlineAsrStatusMessages.connected)
+                else log(demoString(R.string.demo_online_asr_connection_is_not_ready_waiting_for))
+            }
         }
     }
 
@@ -386,7 +391,7 @@ class SendMessageActivity : BaseGlassActivity() {
             R.id.btnOfflineTts -> playOfflineTts()
             R.id.btnStopOfflineTts -> stopTts(online = false)
 
-            R.id.btnOnlineAsr -> startAsr()
+            R.id.btnOnlineAsr -> toggleAsr()
             R.id.btnTtsQueueMode -> toggleTtsQueueMode()
 
             R.id.wfSendTextBtn -> {
@@ -504,12 +509,19 @@ class SendMessageActivity : BaseGlassActivity() {
         }
     }
 
-    private fun startAsr() {
+    private fun toggleAsr() {
         if (onlineAsrSession.id != 0L) {
             val stopped = stopOnlineAsr()
             log(if (stopped) demoString(R.string.demo_online_asr_stop_requested_tap_again_to_start) else demoString(R.string.demo_failed_to_stop_online_asr_tap_again_to))
             return
         }
+        startAsr()
+    }
+
+    private fun startAsr() {
+        // Start requests are single-flight. A repeated callback is ignored; stopping is
+        // handled explicitly by the button toggle above.
+        if (onlineAsrSession.id != 0L) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) !=
             PackageManager.PERMISSION_GRANTED
         ) {
@@ -538,6 +550,10 @@ class SendMessageActivity : BaseGlassActivity() {
 
         try {
             val token = onlineAsrSession.begin()
+            if (token == 0L) {
+                log(demoString(R.string.demo_online_asr_connection_is_not_ready_waiting_for))
+                return
+            }
             binding.btnOnlineAsr.text = demoString(R.string.demo_stop_asr)
             log(OnlineAsrStatusMessages.connecting)
             scheduleOnlineAsrTimeout()

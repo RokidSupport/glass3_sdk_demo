@@ -12,6 +12,13 @@ class OnlineSpeechSessionTest {
         assertTrue(s.started(token))
         assertFalse(s.starting)
     }
+    @Test fun disconnectedStateBlocksStartUntilReconnected() {
+        val s = OnlineSpeechSession()
+        s.updateConnectionState(false)
+        assertEquals(0L, s.begin())
+        s.updateConnectionState(true)
+        assertTrue(s.begin() > 0L)
+    }
     @Test fun stoppedCallbacksCannotAffectNextSession() {
         val s = OnlineSpeechSession()
         val old = s.begin()

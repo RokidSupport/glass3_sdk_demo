@@ -12,11 +12,18 @@ internal class OnlineSpeechSession {
         private set
     var waiting = 0
         private set
+    /** null means the SDK has not reported a connection state yet. */
+    var connected: Boolean? = null
+        private set
 
     fun accepts(token: Long) = token != 0L && token == id && !stopping
 
+    fun updateConnectionState(connect: Boolean) {
+        connected = connect
+    }
+
     fun begin(): Long {
-        if (id != 0L) return 0L
+        if (id != 0L || connected == false) return 0L
         id = ++nextToken
         starting = true
         stopping = false

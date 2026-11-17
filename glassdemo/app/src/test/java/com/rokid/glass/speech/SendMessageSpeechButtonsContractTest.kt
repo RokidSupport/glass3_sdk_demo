@@ -93,7 +93,7 @@ class SendMessageSpeechButtonsContractTest {
         assertTrue(source.contains("R.id.btnStopOnlineTts -> stopTts(online = true)"))
         assertTrue(source.contains("R.id.btnOfflineTts -> playOfflineTts()"))
         assertTrue(source.contains("R.id.btnStopOfflineTts -> stopTts(online = false)"))
-        assertTrue(source.contains("R.id.btnOnlineAsr -> startAsr()"))
+        assertTrue(source.contains("R.id.btnOnlineAsr -> toggleAsr()"))
         val controller = ttsImplementation()
         assertTrue(source.contains("messageTts.speak(online = true"))
         assertTrue(source.contains("messageTts.speak(online = false"))
