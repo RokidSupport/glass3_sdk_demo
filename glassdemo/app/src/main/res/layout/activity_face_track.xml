@@ -1,4 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  眼镜端预览界面：内容统一放左侧，避免遮挡视线中心与右侧。
+  命中结果用边框卡片展示，卡片内含人脸小图。
+  Glasses overlay layout: everything stays on the left; the hit result is a bordered card
+  that embeds the face thumbnail.
+-->
 <androidx.constraintlayout.widget.ConstraintLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
@@ -6,29 +12,91 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black"
-    android:paddingTop="16dp"
-    tools:context="com.rokid.glass.GlassLprTrackActivity">
+    tools:context="com.rokid.glass.GlassFaceTrackActivity">
 
+    <!-- ========== 左上：人脸库状态 / 检测数量 ========== -->
     <TextView
-        android:id="@+id/tvLog"
-        android:layout_width="0dp"
-        android:layout_height="match_parent"
-        android:layout_marginEnd="10dp"
+        android:id="@+id/tvStatus"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_marginTop="8dp"
+        android:alpha="0.8"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:maxWidth="240dp"
         android:text="@string/demo_detecting_faces"
         android:textColor="@color/green"
-        android:textSize="12sp"
-        app:layout_constraintEnd_toStartOf="@id/ivCapture"
+        android:textSize="10sp"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
-    <androidx.appcompat.widget.AppCompatImageView
-        android:id="@+id/ivCapture"
-        android:layout_width="66dp"
-        android:layout_height="66dp"
-        android:layout_margin="10dp"
-        android:background="@android:color/darker_gray"
-        android:scaleType="centerCrop"
-        app:layout_constraintEnd_toEndOf="parent"
-        app:layout_constraintTop_toTopOf="parent" />
+    <TextView
+        android:id="@+id/tvDetect"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_marginTop="1dp"
+        android:alpha="0.7"
+        android:maxLines="1"
+        android:text="@string/demo_detecting_faces"
+        android:textColor="@color/green"
+        android:textSize="10sp"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/tvStatus" />
+
+    <!-- ========== 左中：命中结果卡片（边框 + 人脸小图 + 姓名/相似度） ========== -->
+    <LinearLayout
+        android:id="@+id/clHitCard"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:background="@drawable/bg_hit_card"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="6dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintVertical_bias="0.62"
+        tools:visibility="visible">
+
+        <androidx.appcompat.widget.AppCompatImageView
+            android:id="@+id/ivCapture"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:background="@android:color/darker_gray"
+            android:scaleType="centerCrop" />
+
+        <TextView
+            android:id="@+id/tvResult"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:maxWidth="180dp"
+            android:textColor="@color/green"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
+    <!-- ========== 左下角：关键事件日志 ========== -->
+    <TextView
+        android:id="@+id/tvLog"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="10dp"
+        android:layout_marginBottom="8dp"
+        android:alpha="0.8"
+        android:maxLines="3"
+        android:maxWidth="260dp"
+        android:ellipsize="end"
+        android:lineSpacingExtra="1dp"
+        android:textColor="@color/green"
+        android:textSize="10sp"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
 </androidx.constraintlayout.widget.ConstraintLayout>

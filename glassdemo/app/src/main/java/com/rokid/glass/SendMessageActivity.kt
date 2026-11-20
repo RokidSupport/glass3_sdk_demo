@@ -24,6 +24,7 @@ import com.rokid.glass.audio.AudioStreamSession
 import com.rokid.glass.base.BaseGlassActivity
 import com.rokid.glass.base.GlassKeyEvent
 import com.rokid.glass.media.MessageMediaActions
+import com.rokid.glass.message.DemoTextMessage
 import com.rokid.glass.speech.MessageTtsController
 import com.rokid.glass.speech.OnlineAsrStatusMessages
 import com.rokid.glass.speech.OnlineSpeechSession
@@ -413,8 +414,10 @@ class SendMessageActivity : BaseGlassActivity() {
             }
 
             R.id.btSendTextBtn -> {
-                GlassSdk.getGlassMessageService()?.sendTextMessageByClassicBT(demoString(R.string.demo_bluetooth_test_message_from_glasses))
-                log(demoString(R.string.demo_bluetooth_test_message_from_glasses))
+                // 手机端会把收到的文本按 JSON（CustomMessage）解析，裸文本会导致手机端崩溃并断开蓝牙。
+                val testText = demoString(R.string.demo_bluetooth_test_message_from_glasses)
+                GlassSdk.getGlassMessageService()?.sendTextMessageByClassicBT(DemoTextMessage.encode(testText))
+                log(testText)
             }
 
             R.id.btSendFileBtn -> {

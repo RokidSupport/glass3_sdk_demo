@@ -1,57 +1,121 @@
 package com.rokid.glass
 
-import com.rokid.glass.utils.demoString
-import com.rokid.glesse.R
-
-import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
+import android.view.View
 import androidx.lifecycle.lifecycleScope
 import com.rokid.glass.base.BaseActivity
 import com.rokid.glass.utils.FileSizeUtil
-import com.rokid.glass.utils.TimeUtils
 import com.rokid.glesse.databinding.ActivityFaceTrackBinding
 import com.rokid.security.glass3.open.sdk.GlassSdk
 import com.rokid.security.glass3.sdk.base.data.recog.offline.bean.FaceModel
+import com.rokid.security.glass3.sdk.base.data.recog.offline.bean.FaceRecgResult
 import com.rokid.security.glass3.sdk.base.data.recog.offline.bean.LPRModel
 import com.rokid.security.sdk.base.common.out.AIRecgMode.Companion.MODE_FACE
+import com.rokid.security.sdk.base.common.outside.PersonnelLibInfo
 import com.rokid.security.system.server.media.callback.VideoCallback
-import com.rokid.security.system.server.recog.online.listener.IGlassDetectionListener
+import com.rokid.security.system.server.recog.offline.callback.CheckUpdateCallback
+import com.rokid.security.system.server.recog.offline.feature.listener.IGlassRecListener
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
+/**
+ * 离线人脸检测 + 本地特征库比对示例。
+ *
+ * 界面分层，避免回调刷屏：
+ * - tvStatus：库状态 / 场景 / 下载进度
+ * - tvDetect：人脸检测数量（仅变化时刷新）
+ * - tvResult：最近一次比对结果（命中 / 不在库）
+ * - tvLog：只保留最近几条关键事件
+ * - ivCapture：人脸小图
+ *
+ * sceneId 必须与平台上配置的离线库场景一致，可通过 Intent extra "scene_id" 覆盖。
+ */
 class GlassFaceTrackActivity : BaseActivity() {
-    private val TAG = "GlassTrackActivity"
+    private val TAG = "GlassFaceTrackActivity"
     private lateinit var binding: ActivityFaceTrackBinding
-    private var lastTrackId: Long = -1L
     private var oldBitmap: Bitmap? = null
-    private var lastTime = 0L
-    private val logBuilder = StringBuilder()
 
-    /**
-     * 离线和在线人脸检测功能
-     * Offline and online face detection features.
-     */
-    private val mAbsGlassOnlineRecService by lazy {
-        GlassSdk.getGlassOnlineRecService()
+    /** 关键事件日志，最多保留 [MAX_LOG_LINES] 行。 */
+    private val logLines = ArrayDeque<String>()
+
+    /** 当前场景 ID，默认值与平台上配置的离线库场景保持一致。 */
+    private var sceneId: String = DEFAULT_SCENE_ID
+
+    /** 识别是否已启动，避免重复 start。 */
+    private var recognitionStarted = false
+
+    /** 上一次检测到的人脸数量，-1 表示还没回调过。 */
+    private var lastFaceCount = -1
+
+    /** 上一次比对结果（用于去重，避免同一张脸反复刷新）。 */
+    private var lastResultKey = ""
+
+    private var lastResultAt = 0L
+
+    private val mOfflineRecService by lazy {
+        GlassSdk.getGlassOfflineRecService()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityFaceTrackBinding.inflate(layoutInflater)
         setContentView(binding.root)
+        sceneId = intent?.getStringExtra(EXTRA_SCENE_ID)?.takeIf { it.isNotBlank() } ?: DEFAULT_SCENE_ID
+        setStatus("离线人脸 · $sceneId")
+        setDetect("等待检测…")
         initView()
     }
 
     private fun initView() {
-        // 设置人脸检测监听
-        // Set the face detection listener.
-        mAbsGlassOnlineRecService?.setGlassOnlineRecListener(mIGlassDetectionListener)
-        // 开始人脸检测
-        // Start face detection.
-        mAbsGlassOnlineRecService?.startDetection(MODE_FACE)
-        lastTime = System.currentTimeMillis()
+        val rec = mOfflineRecService
+        if (rec == null) {
+            setStatus("离线识别服务不可用")
+            return
+        }
+        val hasLocalLib = runCatching { rec.isExistLib(sceneId) }.getOrDefault(false)
+        addLog("本地人脸库: ${if (hasLocalLib) "已存在" else "不存在"}")
+        setStatus("正在检查人脸库…")
+
+        // 1. 拉取/更新人脸库。连着手机时由手机代拉，没连手机时眼镜直连云端。
+        rec.checkUpdateLibVersion(sceneId, object : CheckUpdateCallback.Stub() {
+            override fun onProgress(progress: Int) {
+                setStatus("人脸库下载中 $progress%")
+            }
+
+            override fun onFinish(libInfo: PersonnelLibInfo?) {
+                val name = libInfo?.libraryName ?: "未命名"
+                val version = libInfo?.libVersion ?: "-"
+                setStatus("库已就绪 · $name v$version")
+                addLog("人脸库更新完成: $name v$version")
+                startRecognition()
+            }
+
+            override fun onFail(code: Int, errMsg: String?) {
+                when (code) {
+                    -4 -> setStatus("未配置离线库(-4)，用本地库")
+                    -2 -> setStatus("未获取到设备 SN(-2)")
+                    -3 -> setStatus("人脸库下载/激活失败(-3)")
+                    else -> setStatus("人脸库更新失败($code)")
+                }
+                addLog("拉库失败 code=$code, msg=$errMsg")
+                startRecognition()
+            }
+        })
+    }
+
+    /** 2. 用本地人脸库启动离线识别（比对在眼镜端完成，不依赖网络）。 */
+    private fun startRecognition() {
+        val rec = mOfflineRecService ?: return
+        if (recognitionStarted) return
+        recognitionStarted = true
+        runCatching {
+            rec.startRecognition(sceneId, MODE_FACE, mOfflineRecListener)
+            addLog("离线识别已启动")
+        }.onFailure {
+            addLog("启动失败: ${it.message}")
+        }
     }
 
     /**
@@ -83,12 +147,10 @@ class GlassFaceTrackActivity : BaseActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        // 停止人脸检测
-        // Stop face detection.
-        mAbsGlassOnlineRecService?.stopDetection()
-        // 移除检测监听
-        // Remove the detection listener.
-        mAbsGlassOnlineRecService?.removeGlassOnlineRecListener(mIGlassDetectionListener)
+        if (recognitionStarted) {
+            runCatching { mOfflineRecService?.stopRecognition(sceneId, mOfflineRecListener) }
+            recognitionStarted = false
+        }
         if (oldBitmap?.isRecycled == false) {
             oldBitmap?.recycle()
             oldBitmap = null
@@ -114,134 +176,152 @@ class GlassFaceTrackActivity : BaseActivity() {
     }
 
     /**
-     * 人脸检测监听
-     * Face detection listener.
+     * 离线识别回调：检测结果 + 本地库比对结果。
      */
-    private val mIGlassDetectionListener = object : IGlassDetectionListener.Stub() {
+    private val mOfflineRecListener = object : IGlassRecListener.Stub() {
+        override fun getCallbackId(): String = "glassdemo_face_$sceneId"
 
-        /**
-         * 检测模式发送改变的回调
-         * Callback for detection mode changes.
-         * @param mode 检测模式
-         * The detection mode.
-         */
         override fun onModeChange(mode: Int) {
-            Log.e(TAG, "onModeChange: $mode")
+            Log.d(TAG, "onModeChange: $mode")
+        }
+
+        override fun onFaceTrack(faceModels: MutableList<FaceModel>?) {
+            // 只在“人脸数量”变化时刷新，避免 0 张时也刷屏。
+            val count = faceModels?.size ?: 0
+            if (count == lastFaceCount) return
+            lastFaceCount = count
+            setDetect(if (count > 0) "检测到 $count 张人脸" else "未检测到人脸")
+        }
+
+        override fun onLPRTrack(lprModel: LPRModel?) {
+        }
+
+        /** 命中本地人脸库 */
+        override fun onFaceRecognize(result: FaceRecgResult?) {
+            result ?: return
+            val name = displayName(result.label)
+            val text = "命中：$name  ${formatScore(result.regScore)}"
+            if (setResult(text, key = "hit:$name")) {
+                showFaceImage(result)
+            }
         }
 
         /**
-         * 人脸检测的回调(可用于更新人脸追踪框)
-         * Face detection callback, which can be used to update face tracking boxes.
-         * @param faceModels 人脸模型列表
-         * The list of face models.
+         * 未命中本地人脸库：按需求不在界面上展示，只写调试日志。
+         * Not-in-library results are intentionally not shown on screen.
          */
-        override fun onFaceTrack(faceModels: List<FaceModel>) {
+        override fun onFaceRecognizeNotInLib(result: FaceRecgResult?) {
+            result ?: return
+            Log.d(TAG, "not in library, score=${formatScore(result.regScore)}, trackId=${result.trackId}")
         }
 
-        /**
-         * 车牌识别的回调
-         * License plate recognition callback.
-         * @param lprModel 车牌模型
-         * The license plate model.
-         */
-        override fun onLPRTrack(lprModel: LPRModel) {
+        override fun onEngineInit() {
+            addLog("识别引擎初始化完成")
         }
+    }
 
-        /**
-         * 筛选最优的人脸图像 (可用于在线人脸识别接口的调用)
-         * Select the best face image, which can be used with the online face recognition API.
-         * @param processedFaceModels 处理后的人脸模型列表
-         * The list of processed face models.
-         */
-        @SuppressLint("SetTextI18n")
-        override fun onProcessedFaceModels(processedFaceModels: List<FaceModel>) {
-            if (processedFaceModels.isEmpty()) {
-                log(demoString(R.string.demo_no_face_data))
-                return
-            }
-            val faceModel = processedFaceModels.maxByOrNull { it.rect.width() * it.rect.height() }
-            if (faceModel == null) {
-                log(demoString(R.string.demo_no_face_data_meets_the_requirements))
-                return
-            }
-            var duration = System.currentTimeMillis() - lastTime
-            // 图像质量低于35人脸检测不到
-            // Faces cannot be detected when the image quality is below 35.
-            if (faceModel.iqaScore < 40) {
-                lastTime = System.currentTimeMillis()
-                val faeInfo =
-                    StringBuilder(
-                        demoString(R.string.demo_duration_low_image_quality_face_confidence_tracking_id, TimeUtils.formatDuration(duration), "%.1f".format(faceModel.iqaScore),
-                            "%.1f".format(faceModel.faceScore),
-                            faceModel.trackId)
-                    )
-                log(faeInfo.toString())
-                return
-            }
-            val faeInfo =
-                StringBuilder(
-                    demoString(R.string.demo_duration_image_quality_face_confidence_tracking_id, TimeUtils.formatDuration(duration), "%.1f".format(faceModel.iqaScore),
-                        "%.1f".format(faceModel.faceScore),
-                        faceModel.trackId)
-                )
-            if (faceModel.trackId == lastTrackId) {
-                lastTime = System.currentTimeMillis()
-                faeInfo.append(demoString(R.string.demo_same_face_image))
-                log(faeInfo.toString())
-                return
-            }
-            // 先更新人脸抓拍图
-            // Update the captured face image first.
-            val smallBitmap = mAbsGlassOnlineRecService?.getFaceSamllBitmap(faceModel.trackId)
-            duration = System.currentTimeMillis() - lastTime
-            lastTime = System.currentTimeMillis()
-            if (smallBitmap == null) {
-                log(demoString(R.string.demo_duration_no_face_image_received, TimeUtils.formatDuration(duration)))
-                return
-            }
-
-            if (smallBitmap.isRecycled) {
-                return
-            }
-            // 回收上一张图片
-            // Recycle the previous image.
-            if (oldBitmap?.isRecycled == false) {
-                Log.d(TAG, "回收上一张人脸图片: ${getBitmapSizeInfo(oldBitmap)}")
-                oldBitmap?.recycle()
-                oldBitmap = null
-            }
-            oldBitmap = smallBitmap
-            val oldBitmapSizeInfo = getBitmapSizeInfo(smallBitmap)
-            lifecycleScope.launch(Dispatchers.Main) {
-                binding.ivCapture.setImageBitmap(smallBitmap)
-                // float 类型保留1位
-                // Keep one decimal place for the floating-point value.
-                var result =
-                    demoString(R.string.demo_duration_quality_tracking_id_image_size, TimeUtils.formatDuration(duration),
-                        "%.1f".format(faceModel.iqaScore),
-                        faceModel.trackId, oldBitmapSizeInfo)
-                log(result)
-            }
+    /** 3. 取人脸小图并展示（离线接口：getFaceSamllBitmap(frameId, trackId)）。 */
+    private fun showFaceImage(result: FaceRecgResult) {
+        val frameId = runCatching { result.faceModel.frameId }.getOrDefault(-1L)
+        val bitmap = runCatching {
+            mOfflineRecService?.getFaceSamllBitmap(frameId, result.trackId)
+        }.getOrNull() ?: return
+        if (bitmap.isRecycled) return
+        if (oldBitmap?.isRecycled == false) {
+            oldBitmap?.recycle()
         }
+        oldBitmap = bitmap
+        val sizeInfo = getBitmapSizeInfo(bitmap)
+        lifecycleScope.launch(Dispatchers.Main) {
+            binding.ivCapture.setImageBitmap(bitmap)
+        }
+        addLog("小图 $sizeInfo · trackId=${result.trackId}")
     }
 
     private fun getBitmapSizeInfo(bitmap: Bitmap?): String {
         if (bitmap == null || bitmap.isRecycled) {
             return "0 B"
         }
-        val sizeText = FileSizeUtil.formatFileSize(bitmap.allocationByteCount.toDouble())
-        return "${bitmap.width}x${bitmap.height}, $sizeText, ${bitmap.config}"
+        val sizeText = FileSizeUtil.formatFileSize(bitmap.allocByteCount().toDouble())
+        return "${bitmap.width}x${bitmap.height}, $sizeText"
     }
 
-    private fun log(msg: String) {
-        if (logBuilder.length > 5000) {
-            logBuilder.clear()
+    private fun Bitmap.allocByteCount(): Int = allocationByteCount
+
+    /**
+     * 从引擎返回的 label 中解析人名。
+     *
+     * 离线库的 label 是竖线分隔的字段串，例如：
+     * `374689888739201923384966065|hh|null` → 第 2 段是姓名，`null`/空段忽略。
+     * 如果 label 不是这种格式，就原样展示。
+     */
+    private fun displayName(label: String?): String {
+        val raw = label?.trim().orEmpty()
+        if (raw.isEmpty() || raw.equals("null", ignoreCase = true)) return "未知"
+        val parts = raw.split("|").map { it.trim() }
+        if (parts.size >= 2) {
+            val name = parts[1].takeIf { it.isNotEmpty() && !it.equals("null", ignoreCase = true) }
+            if (!name.isNullOrEmpty()) return name
         }
-        logBuilder.insert(0, "$msg\n")
-        lifecycleScope.launch(Dispatchers.Main) {
-            binding.tvLog.text = logBuilder.toString()
-        }
-        Log.d(TAG, "----msg=${msg}")
+        return parts.firstOrNull { it.isNotEmpty() && !it.equals("null", ignoreCase = true) } ?: "未知"
     }
 
+    /**
+     * 统一相似度显示：引擎有的版本返回 0~1，有的返回 0~100，这里自动归一成百分比。
+     */
+    private fun formatScore(score: Float): String {
+        val percent = if (score <= 1f) score * 100f else score
+        return "%.1f%%".format(percent)
+    }
+
+    // ---------------- UI 更新 ----------------
+
+    private fun setStatus(text: String) {
+        runOnUiThread { binding.tvStatus.text = text }
+    }
+
+    private fun setDetect(text: String) {
+        runOnUiThread { binding.tvDetect.text = text }
+    }
+
+    /**
+     * 更新比对结果，同一结果短时间内不重复刷新，避免闪烁/刷屏。
+     *
+     * @return true 表示这次确实更新了界面（调用方可以据此刷新小图/日志）。
+     */
+    private fun setResult(text: String, key: String): Boolean {
+        val now = System.currentTimeMillis()
+        if (key == lastResultKey && now - lastResultAt < RESULT_DEBOUNCE_MS) return false
+        lastResultKey = key
+        lastResultAt = now
+        runOnUiThread {
+            binding.tvResult.text = text
+            binding.clHitCard.visibility = View.VISIBLE
+        }
+        addLog(text)
+        return true
+    }
+
+    /** 只保留最近几条关键事件。 */
+    private fun addLog(msg: String) {
+        logLines.addLast(msg)
+        while (logLines.size > MAX_LOG_LINES) {
+            logLines.removeFirst()
+        }
+        val text = logLines.joinToString("\n")
+        runOnUiThread { binding.tvLog.text = text }
+        Log.d(TAG, "----$msg")
+    }
+
+    companion object {
+        /** 默认场景 ID，需与平台上离线人脸库配置的 scene 一致。 */
+        private const val DEFAULT_SCENE_ID = "hxg"
+
+        /** 可选：通过 Intent 传入其他 sceneId。 */
+        const val EXTRA_SCENE_ID = "scene_id"
+
+        private const val MAX_LOG_LINES = 3
+
+        private const val RESULT_DEBOUNCE_MS = 3000L
+    }
 }
