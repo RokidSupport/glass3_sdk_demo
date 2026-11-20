@@ -21,16 +21,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * 离线人脸检测 + 本地特征库比对示例。
+ * 离线人脸检测 + 本地人脸库比对示例（通过平台按场景下发人脸库）。
  *
  * 界面分层，避免回调刷屏：
  * - tvStatus：库状态 / 场景 / 下载进度
  * - tvDetect：人脸检测数量（仅变化时刷新）
- * - tvResult：最近一次比对结果（命中 / 不在库）
+ * - tvResult：最近一次比对结果（命中）
  * - tvLog：只保留最近几条关键事件
  * - ivCapture：人脸小图
  *
- * sceneId 必须与平台上配置的离线库场景一致，可通过 Intent extra "scene_id" 覆盖。
+ * sceneId 默认使用 "hh"，可根据实际场景自定义，也可通过 Intent extra "scene_id" 覆盖。
  */
 class GlassFaceTrackActivity : BaseActivity() {
     private val TAG = "GlassFaceTrackActivity"
@@ -176,7 +176,7 @@ class GlassFaceTrackActivity : BaseActivity() {
     }
 
     /**
-     * 离线识别回调：检测结果 + 本地库比对结果。
+     * 离线识别回调：检测结果 + 本地人脸库比对结果。
      */
     private val mOfflineRecListener = object : IGlassRecListener.Stub() {
         override fun getCallbackId(): String = "glassdemo_face_$sceneId"
@@ -186,7 +186,6 @@ class GlassFaceTrackActivity : BaseActivity() {
         }
 
         override fun onFaceTrack(faceModels: MutableList<FaceModel>?) {
-            // 只在“人脸数量”变化时刷新，避免 0 张时也刷屏。
             val count = faceModels?.size ?: 0
             if (count == lastFaceCount) return
             lastFaceCount = count
@@ -207,8 +206,7 @@ class GlassFaceTrackActivity : BaseActivity() {
         }
 
         /**
-         * 未命中本地人脸库：按需求不在界面上展示，只写调试日志。
-         * Not-in-library results are intentionally not shown on screen.
+         * 未命中本地人脸库：不在界面上展示，只写调试日志。
          */
         override fun onFaceRecognizeNotInLib(result: FaceRecgResult?) {
             result ?: return
@@ -220,7 +218,7 @@ class GlassFaceTrackActivity : BaseActivity() {
         }
     }
 
-    /** 3. 取人脸小图并展示（离线接口：getFaceSamllBitmap(frameId, trackId)）。 */
+    /** 3. 取人脸小图并展示。 */
     private fun showFaceImage(result: FaceRecgResult) {
         val frameId = runCatching { result.faceModel.frameId }.getOrDefault(-1L)
         val bitmap = runCatching {
@@ -242,11 +240,9 @@ class GlassFaceTrackActivity : BaseActivity() {
         if (bitmap == null || bitmap.isRecycled) {
             return "0 B"
         }
-        val sizeText = FileSizeUtil.formatFileSize(bitmap.allocByteCount().toDouble())
+        val sizeText = FileSizeUtil.formatFileSize(bitmap.allocationByteCount.toDouble())
         return "${bitmap.width}x${bitmap.height}, $sizeText"
     }
-
-    private fun Bitmap.allocByteCount(): Int = allocationByteCount
 
     /**
      * 从引擎返回的 label 中解析人名。
@@ -314,8 +310,8 @@ class GlassFaceTrackActivity : BaseActivity() {
     }
 
     companion object {
-        /** 默认场景 ID，需与平台上离线人脸库配置的 scene 一致。 */
-        private const val DEFAULT_SCENE_ID = "hxg"
+        /** 默认场景 ID，可自定义（按实际场景修改，或通过 Intent 覆盖）。 */
+        private const val DEFAULT_SCENE_ID = "hh"
 
         /** 可选：通过 Intent 传入其他 sceneId。 */
         const val EXTRA_SCENE_ID = "scene_id"
